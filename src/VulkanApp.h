@@ -8,6 +8,7 @@
 #include <string>    // for std::string
 #include <vector>
 #include <array>
+#include <functional>
 #include <glm/glm.hpp>
 
 struct Vertex {
@@ -52,10 +53,13 @@ public:
     void uploadMesh(const std::vector<Vertex>& vertices,
                     const std::vector<uint32_t>& indices);
     void mainLoop();
+    GLFWwindow* getWindow() const { return window; }
+    void setUpdateCallback(const std::function<void(float)>& cb) { updateCallback = cb; }
     void cleanup();
 
 private:
     GLFWwindow* window = nullptr;
+    std::function<void(float)> updateCallback;
 
     VkInstance               instance;
     VkPhysicalDevice         physicalDevice = VK_NULL_HANDLE;
