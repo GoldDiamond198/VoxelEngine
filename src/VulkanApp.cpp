@@ -380,5 +380,185 @@ void VulkanApp::createCommandBuffers() {
         vkCmdBindVertexBuffers(commandBuffers[i], 0, 1, vbs, offs);
         vkCmdBindIndexBuffer(commandBuffers[i], indexBuffer, 0, VK_INDEX_TYPE_UINT32);
         vkCmdDrawIndexed(commandBuffers[i], indexCount, 1, 0, 0, 0);
+        vkCmdEndRenderPass(commandBuffers[i]);
+        vkEndCommandBuffer(commandBuffers[i]);
     }
+}
+
+// 12. Synchronization objects
+void VulkanApp::createSyncObjects() {
+    VkSemaphoreCreateInfo si{ VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+    if (vkCreateSemaphore(device, &si, nullptr, &imageAvailableSemaphore) != VK_SUCCESS ||
+        vkCreateSemaphore(device, &si, nullptr, &renderFinishedSemaphore) != VK_SUCCESS)
+        throw std::runtime_error("Failed to create semaphores");
+}
+
+// 13. Upload vertex/index data
+void VulkanApp::uploadMesh(const std::vector<Vertex>& vertices,
+                           const std::vector<uint32_t>& indices) {
+    indexCount = static_cast<uint32_t>(indices.size());
+
+    VkDeviceSize vbSize = sizeof(Vertex) * vertices.size();
+    VkDeviceSize ibSize = sizeof(uint32_t) * indices.size();
+
+    createBuffer(vbSize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, vertexBuffer, vertexBufferMemory);
+    createBuffer(ibSize, VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, indexBuffer, indexBufferMemory);
+
+    VkBuffer stagingVB, stagingIB; VkDeviceMemory stagingVBMem, stagingIBMem;
+    createBuffer(vbSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                 stagingVB, stagingVBMem);
+    createBuffer(ibSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                 stagingIB, stagingIBMem);
+
+    void* data;
+    vkMapMemory(device, stagingVBMem, 0, vbSize, 0, &data);
+    memcpy(data, vertices.data(), (size_t)vbSize);
+    vkUnmapMemory(device, stagingVBMem);
+    vkMapMemory(device, stagingIBMem, 0, ibSize, 0, &data);
+    memcpy(data, indices.data(), (size_t)ibSize);
+    vkUnmapMemory(device, stagingIBMem);
+
+    copyBuffer(stagingVB, vertexBuffer, vbSize);
+    copyBuffer(stagingIB, indexBuffer, ibSize);
+
+    vkDestroyBuffer(device, stagingVB, nullptr);
+    vkFreeMemory(device, stagingVBMem, nullptr);
+    vkDestroyBuffer(device, stagingIB, nullptr);
+    vkFreeMemory(device, stagingIBMem, nullptr);
+}
+
+// 14. Draw frame
+void VulkanApp::drawFrame() {
+    uint32_t imageIndex;
+    vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, imageAvailableSemaphore,
+                          VK_NULL_HANDLE, &imageIndex);
+
+    VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    VkSubmitInfo si{ VK_STRUCTURE_TYPE_SUBMIT_INFO };
+    si.waitSemaphoreCount = 1;
+    si.pWaitSemaphores = &imageAvailableSemaphore;
+    si.pWaitDstStageMask = &waitStage;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &commandBuffers[imageIndex];
+    si.signalSemaphoreCount = 1;
+    si.pSignalSemaphores = &renderFinishedSemaphore;
+    if (vkQueueSubmit(graphicsQueue, 1, &si, VK_NULL_HANDLE) != VK_SUCCESS)
+        throw std::runtime_error("Failed to submit draw command buffer");
+
+    VkPresentInfoKHR pi{ VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
+    pi.waitSemaphoreCount = 1;
+    pi.pWaitSemaphores = &renderFinishedSemaphore;
+    pi.swapchainCount = 1;
+    pi.pSwapchains = &swapchain;
+    pi.pImageIndices = &imageIndex;
+    vkQueuePresentKHR(presentQueue, &pi);
+    vkQueueWaitIdle(presentQueue);
+}
+
+// Helper: create buffer
+void VulkanApp::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
+                             VkMemoryPropertyFlags properties, VkBuffer& buffer,
+                             VkDeviceMemory& bufferMemory) {
+    VkBufferCreateInfo bi{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+    bi.size = size;
+    bi.usage = usage;
+    bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (vkCreateBuffer(device, &bi, nullptr, &buffer) != VK_SUCCESS)
+        throw std::runtime_error("Failed to create buffer");
+
+    VkMemoryRequirements memReq;
+    vkGetBufferMemoryRequirements(device, buffer, &memReq);
+    VkMemoryAllocateInfo mai{ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+    mai.allocationSize = memReq.size;
+    VkPhysicalDeviceMemoryProperties memProps;
+    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProps);
+    uint32_t type = 0;
+    for (uint32_t i = 0; i < memProps.memoryTypeCount; i++) {
+        if ((memReq.memoryTypeBits & (1 << i)) &&
+            (memProps.memoryTypes[i].propertyFlags & properties) == properties) {
+            type = i; break;
+        }
+    }
+    mai.memoryTypeIndex = type;
+    if (vkAllocateMemory(device, &mai, nullptr, &bufferMemory) != VK_SUCCESS)
+        throw std::runtime_error("Failed to allocate buffer memory");
+    vkBindBufferMemory(device, buffer, bufferMemory, 0);
+}
+
+// Helper: copy buffer using a temporary command buffer
+void VulkanApp::copyBuffer(VkBuffer src, VkBuffer dst, VkDeviceSize size) {
+    VkCommandBufferAllocateInfo ai{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+    ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    ai.commandPool = commandPool;
+    ai.commandBufferCount = 1;
+    VkCommandBuffer cb;
+    vkAllocateCommandBuffers(device, &ai, &cb);
+    VkCommandBufferBeginInfo bi{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cb, &bi);
+    VkBufferCopy copy{ 0,0,size };
+    vkCmdCopyBuffer(cb, src, dst, 1, &copy);
+    vkEndCommandBuffer(cb);
+    VkSubmitInfo si{ VK_STRUCTURE_TYPE_SUBMIT_INFO };
+    si.commandBufferCount = 1; si.pCommandBuffers = &cb;
+    vkQueueSubmit(graphicsQueue, 1, &si, VK_NULL_HANDLE);
+    vkQueueWaitIdle(graphicsQueue);
+    vkFreeCommandBuffers(device, commandPool, 1, &cb);
+}
+
+// 15. Window and event loop
+void VulkanApp::initWindow(int width, int height, const char* title) {
+    glfwInit();
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    window = glfwCreateWindow(width, height, title, nullptr, nullptr);
+}
+
+void VulkanApp::initVulkan(const std::vector<Vertex>& vertices,
+                           const std::vector<uint32_t>& indices) {
+    createInstance();
+    createSurface();
+    pickPhysicalDevice();
+    createLogicalDevice();
+    createSwapchain();
+    createImageViews();
+    createRenderPass();
+    createGraphicsPipeline();
+    createFramebuffers();
+    createCommandPool();
+    uploadMesh(vertices, indices);
+    createCommandBuffers();
+    createSyncObjects();
+}
+
+void VulkanApp::mainLoop() {
+    while (!glfwWindowShouldClose(window)) {
+        glfwPollEvents();
+        drawFrame();
+    }
+    vkDeviceWaitIdle(device);
+}
+
+void VulkanApp::cleanup() {
+    vkDestroySemaphore(device, renderFinishedSemaphore, nullptr);
+    vkDestroySemaphore(device, imageAvailableSemaphore, nullptr);
+    vkDestroyBuffer(device, vertexBuffer, nullptr);
+    vkFreeMemory(device, vertexBufferMemory, nullptr);
+    vkDestroyBuffer(device, indexBuffer, nullptr);
+    vkFreeMemory(device, indexBufferMemory, nullptr);
+    for (auto fb : swapchainFramebuffers) vkDestroyFramebuffer(device, fb, nullptr);
+    vkDestroyPipeline(device, graphicsPipeline, nullptr);
+    vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+    vkDestroyRenderPass(device, renderPass, nullptr);
+    for (auto iv : swapchainImageViews) vkDestroyImageView(device, iv, nullptr);
+    vkDestroySwapchainKHR(device, swapchain, nullptr);
+    vkDestroyCommandPool(device, commandPool, nullptr);
+    vkDestroyDevice(device, nullptr);
+    vkDestroySurfaceKHR(instance, surface, nullptr);
+    vkDestroyInstance(instance, nullptr);
+    glfwDestroyWindow(window);
+    glfwTerminate();
 }

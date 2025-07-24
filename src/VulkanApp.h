@@ -47,7 +47,10 @@ struct Vertex {
 class VulkanApp {
 public:
     void initWindow(int width, int height, const char* title);
-    void initVulkan();
+    void initVulkan(const std::vector<Vertex>& vertices,
+                    const std::vector<uint32_t>& indices);
+    void uploadMesh(const std::vector<Vertex>& vertices,
+                    const std::vector<uint32_t>& indices);
     void mainLoop();
     void cleanup();
 
