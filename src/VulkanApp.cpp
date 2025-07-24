@@ -535,8 +535,13 @@ void VulkanApp::initVulkan(const std::vector<Vertex>& vertices,
 }
 
 void VulkanApp::mainLoop() {
+    float last = static_cast<float>(glfwGetTime());
     while (!glfwWindowShouldClose(window)) {
+        float now = static_cast<float>(glfwGetTime());
+        float dt = now - last;
+        last = now;
         glfwPollEvents();
+        if (updateCallback) updateCallback(dt);
         drawFrame();
     }
     vkDeviceWaitIdle(device);

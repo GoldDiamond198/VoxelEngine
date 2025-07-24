@@ -23,6 +23,7 @@ void PixelGame::run() {
     std::vector<Vertex> vertices; std::vector<uint32_t> indices;
     pool.enqueue([this,&vertices,&indices](){ loadWorld(vertices, indices); }).wait();
     app.initVulkan(vertices, indices);
+    app.setUpdateCallback([this](float dt){ player.update(app.getWindow(), dt); });
     app.mainLoop();
     app.cleanup();
 }
